@@ -519,27 +519,6 @@ public class MatchManager {
         gameMap.getCage().removeSpawnHousing(gameMap);
         gameMap.getWaitingPlayers().clear();
 
-        if (SkyWarsReloaded.getCfg().getEnablePVPTimer() && SkyWarsReloaded.getCfg().getPVPTimerTime() >= 1) {
-            gameMap.setDisableDamage(true);
-
-            Bukkit.getScheduler().scheduleSyncDelayedTask(SkyWarsReloaded.get(), () -> {
-                gameMap.setDisableDamage(false);
-                gameMap.getWaitingPlayers().clear();
-                for (Player player : gameMap.getAlivePlayers()) {
-                    if (!SkyWarsReloaded.getMessaging().getFile().getString("game.pvp-timer-disabled-message").isEmpty()) {
-                        player.sendMessage(new Messaging.MessageFormatter().setVariable("player", player.getName()).setVariable("arena", gameMap.getName()).format("game.pvp-timer-disabled-message"));
-                    }
-                    if (!SkyWarsReloaded.getMessaging().getFile().getString("game.pvp-timer-disabled-title").isEmpty()) {
-                        String[] lines = new Messaging.MessageFormatter().setVariable("player", player.getName()).setVariable("arena", gameMap.getName()).format("game.pvp-timer-disabled-title").split("\\\\n");
-                        if (lines.length == 1) {
-                            SkyWarsReloaded.getNMS().sendTitle(player, 20, 50, 20, lines[0], "");
-                        } else {
-                            SkyWarsReloaded.getNMS().sendTitle(player, 20, 50, 20, lines[0], lines[1]);
-                        }
-                    }
-                }
-            }, 20L * SkyWarsReloaded.getCfg().getPVPTimerTime());
-        }
     }
 
     private void selectKit(GameMap gameMap) {

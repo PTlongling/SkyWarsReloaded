@@ -1,236 +1,153 @@
 package com.walrusone.skywarsreloaded.managers.worlds;
 
-import com.grinderwolf.swm.plugin.SWMPlugin;
-import com.grinderwolf.swm.plugin.config.ConfigManager;
-import com.grinderwolf.swm.plugin.config.WorldData;
-import com.grinderwolf.swm.plugin.config.WorldsConfig;
-import com.infernalsuite.aswm.api.SlimeNMSBridge;
-import com.infernalsuite.aswm.api.SlimePlugin;
-import com.infernalsuite.aswm.api.loaders.SlimeLoader;
-import com.infernalsuite.aswm.api.world.SlimeWorld;
-import com.infernalsuite.aswm.api.world.SlimeWorldInstance;
-import com.infernalsuite.aswm.api.world.properties.SlimeProperties;
-import com.infernalsuite.aswm.api.world.properties.SlimePropertyMap;
+import com.infernalsuite.asp.api.AdvancedSlimePaperAPI;
+import com.infernalsuite.asp.api.loaders.SlimeLoader;
+import com.infernalsuite.asp.api.world.SlimeWorld;
+import com.infernalsuite.asp.api.world.SlimeWorldInstance;
+import com.infernalsuite.asp.api.world.properties.SlimeProperties;
+import com.infernalsuite.asp.api.world.properties.SlimePropertyMap;
 import com.walrusone.skywarsreloaded.SkyWarsReloaded;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.World;
-import org.bukkit.entity.SpawnCategory;
-import org.bukkit.event.world.WorldLoadEvent;
 
 import java.io.File;
-import java.io.IOException;
-import java.lang.reflect.Field;
-import java.util.concurrent.ExecutionException;
 import java.util.logging.Level;
 
 @SuppressWarnings({"CallToPrintStackTrace", "unused"})
 public class ASPWorldManagerImpl implements ASPWorldManager {
 
-    SlimePlugin plugin;
-    SlimeLoader loader;
-    @SuppressWarnings("UnstableApiUsage")
-    SlimeNMSBridge slimeNMS;
+    private final AdvancedSlimePaperAPI asp = AdvancedSlimePaperAPI.instance();
+    private final SlimeLoader loader;
 
     public ASPWorldManagerImpl() {
-        this.plugin = (SlimePlugin) Bukkit.getPluginManager().getPlugin("SlimeWorldManager");
-        this.loader = plugin.getLoader(SkyWarsReloaded.getCfg().getSlimeWorldManagerSource());
-        // Attempt to get slime nms
+        // Loader instances are not provided by the API — instantiate the file loader directly.
+        // The source name from config maps to loader type; default to file-based loader.
+        String source = SkyWarsReloaded.getCfg().getSlimeWorldManagerSource();
+        this.loader = createLoader(source);
+    }
+
+    private SlimeLoader createLoader(String source) {
+        // ASP loaders are not on the classpath here (they must be shaded separately).
+        // We use reflection to instantiate the FileLoader so the build doesn't fail when
+        // the loader artifact is absent, and fall back to null gracefully at runtime.
         try {
-            Class<SWMPlugin> swmPluginClass = SWMPlugin.class;
-            Field field = swmPluginClass.getDeclaredField("BRIDGE_INSTANCE");
-            field.setAccessible(true);
-            // noinspection UnstableApiUsage
-            this.slimeNMS = (SlimeNMSBridge) field.get(null);
-            field.setAccessible(false);
-        } catch (NoSuchFieldException | IllegalAccessException | ClassCastException e) {
-            slimeNMS = null;
-            e.printStackTrace();
+            String loaderClass;
+            switch (source.toLowerCase()) {
+                case "mongodb":
+                case "mongo":
+                    loaderClass = "com.infernalsuite.asp.loaders.mongodb.MongoDbLoader";
+                    break;
+                case "mysql":
+                    loaderClass = "com.infernalsuite.asp.loaders.mysql.MysqlLoader";
+                    break;
+                case "redis":
+                    loaderClass = "com.infernalsuite.asp.loaders.redis.RedisLoader";
+                    break;
+                default:
+                    loaderClass = "com.infernalsuite.asp.loaders.file.FileLoader";
+                    break;
+            }
+            Class<?> clazz = Class.forName(loaderClass);
+            if (source.equalsIgnoreCase("file") || source.equalsIgnoreCase("default")) {
+                return (SlimeLoader) clazz.getConstructor(String.class).newInstance("slime_worlds");
+            }
+            return (SlimeLoader) clazz.getConstructor().newInstance();
+        } catch (Exception e) {
+            SkyWarsReloaded.get().getLogger().log(Level.SEVERE,
+                    "Failed to instantiate ASP SlimeLoader for source '" + source + "'. Falling back to file loader.", e);
+            try {
+                Class<?> clazz = Class.forName("com.infernalsuite.asp.loaders.file.FileLoader");
+                return (SlimeLoader) clazz.getConstructor(String.class).newInstance("slime_worlds");
+            } catch (Exception ex) {
+                ex.printStackTrace();
+                return null;
+            }
         }
     }
 
     @Override
     public World createEmptyWorld(String name, World.Environment environment) {
-        WorldData worldData = new WorldData();
-        SlimePropertyMap propertyMap = worldData.toPropertyMap();
+        if (loader == null) return null;
+
+        SlimePropertyMap propertyMap = new SlimePropertyMap();
         propertyMap.setValue(SlimeProperties.SPAWN_X, 0);
         propertyMap.setValue(SlimeProperties.SPAWN_Y, 64);
         propertyMap.setValue(SlimeProperties.SPAWN_Z, 0);
-        propertyMap.setValue(SlimeProperties.ENVIRONMENT, environment.name());
+        propertyMap.setValue(SlimeProperties.ENVIRONMENT, environment.name().toLowerCase());
         propertyMap.setValue(SlimeProperties.DIFFICULTY, "normal");
 
         try {
-            SlimeWorld slimeWorld = plugin.createEmptyWorld(loader, name, false, propertyMap);
+            SlimeWorld slimeWorld = asp.createEmptyWorld(name, false, propertyMap, loader);
+            SlimeWorldInstance instance = asp.loadWorld(slimeWorld, true);
 
-            plugin.loadWorld(slimeWorld);
-
-            World bukkitWorld = Bukkit.getWorld(name);
+            World bukkitWorld = instance.getBukkitWorld();
             if (bukkitWorld == null) return null;
 
-            Bukkit.getPluginManager().callEvent(new WorldLoadEvent(bukkitWorld));
-
-            Location location = new Location(bukkitWorld, 0, 61, 0);
-            location.getBlock().setType(Material.BEDROCK);
-
-            WorldsConfig config = ConfigManager.getWorldConfig();
-            config.getWorlds().put(name, worldData);
-            config.save();
-
-            //if (world == null) return null;
-
-            bukkitWorld.setDifficulty(org.bukkit.Difficulty.NORMAL);
-            bukkitWorld.setSpawnFlags(true, true);
-            bukkitWorld.setPVP(true);
-            bukkitWorld.setStorm(false);
-            bukkitWorld.setThundering(false);
-            bukkitWorld.setWeatherDuration(Integer.MAX_VALUE);
-            bukkitWorld.setKeepSpawnInMemory(false);
-            bukkitWorld.setTicksPerSpawns(SpawnCategory.ANIMAL, 1);
-            bukkitWorld.setTicksPerSpawns(SpawnCategory.MONSTER, 1);
-            bukkitWorld.setAutoSave(false);
-
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "doMobSpawning", "false");
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "mobGriefing", "false");
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "doFireTick", "false");
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "showDeathMessages", "false");
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "announceAdvancements", "false");
-            SkyWarsReloaded.getNMS().setGameRule(bukkitWorld, "doDaylightCycle", "false");
-
+            new Location(bukkitWorld, 0, 61, 0).getBlock().setType(Material.BEDROCK);
+            applyWorldSettings(bukkitWorld);
             return bukkitWorld;
         } catch (Exception e) {
             e.printStackTrace();
+            return null;
         }
-
-        return null;
     }
 
     @Override
     public boolean loadWorld(String worldName, World.Environment environment, boolean readOnly) {
+        if (loader == null) return false;
 
         if (SkyWarsReloaded.getCfg().debugEnabled()) {
-            SkyWarsReloaded.get().getLogger().info(this.getClass().getName() + "#loadWorld plugin: " + plugin);
-            SkyWarsReloaded.get().getLogger().info(this.getClass().getName() + "#loadWorld worldName: " + worldName);
+            SkyWarsReloaded.get().getLogger().info(getClass().getName() + "#loadWorld: " + worldName);
         }
 
-        WorldsConfig config = ConfigManager.getWorldConfig();
-        WorldData worldData = config.getWorlds().get(worldName);
-
-        if (worldData == null) {
-            SkyWarsReloaded.get().getLogger().severe("An error occurred while loading \"" + worldName + "\" from SlimeWorldManager. Does the map exist?");
-            return false;
+        World existing = Bukkit.getWorld(worldName);
+        if (existing != null) {
+            SkyWarsReloaded.get().getServer().unloadWorld(existing, false);
         }
 
-        // Test if the world already exists in memory
-        World world = Bukkit.getWorld(worldName);
-        if (world != null) {
-            // Update settings for world
-            this.setWorldSettings(world);
-            // Unload world
-            SkyWarsReloaded.get().getServer().unloadWorld(world, false);
-            if (SkyWarsReloaded.getCfg().debugEnabled()) {
-                SkyWarsReloaded.get().getLogger().info(this.getClass().getName() + "#loadWorld unloaded world");
-            }
-        }
-
-        if (SkyWarsReloaded.getCfg().debugEnabled()) {
-            SkyWarsReloaded.get().getLogger().info(this.getClass().getName() + "#loadWorld worldData: " + worldData);
-        }
-
-        // If world not already loaded, we fetch & load world from SWM
         try {
-            SlimeWorld slimeWorld = plugin.loadWorld(loader, worldName, readOnly || worldData.isReadOnly(), worldData.toPropertyMap());
-            plugin.loadWorld(slimeWorld);
+            SlimePropertyMap propertyMap = new SlimePropertyMap();
+            propertyMap.setValue(SlimeProperties.ENVIRONMENT, environment.name().toLowerCase());
+
+            SlimeWorld slimeWorld = asp.readWorld(loader, worldName, readOnly, propertyMap);
+            SlimeWorldInstance instance = asp.loadWorld(slimeWorld, false);
+
+            World world = instance.getBukkitWorld();
+            if (world == null) {
+                Bukkit.getLogger().log(Level.SEVERE, "World is null after loading: " + worldName);
+                return false;
+            }
+
+            applyWorldSettings(world);
+            return true;
         } catch (Exception e) {
             e.printStackTrace();
             return false;
         }
-
-        // Second attempt successful?
-        world = Bukkit.getWorld(worldName);
-        if (world == null) {
-            Bukkit.getLogger().log(Level.SEVERE, "Something went wrong whilst loading a world for the arena " + worldName + ". World is null.");
-            return false;
-        }
-
-        // If all succeeds, set world settings and finish
-        this.setWorldSettings(world);
-        return true;
     }
 
     @Override
     public void unloadWorld(String worldName, boolean shouldSave) {
-        // Pre vars
-        WorldsConfig config = ConfigManager.getWorldConfig();
-        WorldData worldData = config.getWorlds().get(worldName);
         World world = Bukkit.getWorld(worldName);
-
-        // Pre check
         if (world == null) {
-            SkyWarsReloaded.get().getLogger().severe("World " + worldName + " is not loaded but was attempted to be unloaded anyway!");
+            SkyWarsReloaded.get().getLogger().severe("World " + worldName + " is not loaded but unload was attempted!");
             return;
         }
 
-        // Execute unload
         try {
-            // In the case the world already exits in SWM
-            if (loader.worldExists(worldName)) {
-                // noinspection UnstableApiUsage
-                SlimeWorldInstance slimeWorld = slimeNMS.getInstance(world);
-                if (slimeWorld == null) {
-                    SkyWarsReloaded.get().getLogger().severe(
-                            "Cannot save a world to SWM's storage if that world already exists in SWM's storage " +
-                                    "but wasn't loaded from SWM originally!");
-                    return;
-                }
-//                // If we should save but it's not in write mode already
-//                // (UNSAFE OPERATION! IGNORES LOCKS, DOES NOT RETRY IF IT FAILS)
-//                if (shouldSave && slimeWorld.isReadOnly()) {
-//                    // Info
-//                    SkyWarsReloaded.get().getLogger().warning(
-//                            "SWM has this world in read-only mode and skywars was instructed to save " +
-//                                    "this world anyway. Changes should not be lost since skywars will save the " +
-//                                    "world manually, however please disable read-only mode before making edits." +
-//                                    "Force saving worlds is not safe! (Issues caused by not removing read-only " +
-//                                    "mode are under your responsibility)");
-//
-//                    // Save current world data
-//                    byte[] serializedWorld = this.serializeSlimeWorld(slimeWorld);
-//
-//                    // Manually write to loader
-//                    loader.saveWorld(worldName, serializedWorld);
-//
-//                    // Unload without saving, since we already forced that.
-//                    Bukkit.unloadWorld(world, false);
-//                }
-//                else {
-                    // Save if requested, otherwise just unload
-                    Bukkit.unloadWorld(world, shouldSave);
-//                }
-            }
-            else {
-                // In the case the world doesn't already exist in the loader specified in SWM, import it.
-                Bukkit.unloadWorld(world, shouldSave);
-                if (shouldSave) {
-                    plugin.importWorld(world.getWorldFolder(), worldName, loader);
+            if (shouldSave) {
+                SlimeWorldInstance instance = asp.getLoadedWorld(worldName);
+                if (instance != null) {
+                    asp.saveWorld(instance);
                 }
             }
+            Bukkit.unloadWorld(world, false);
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
-
-
-//    protected byte[] serializeSlimeWorld(SlimeWorldInstance slimeWorldInstance) throws IllegalStateException {
-//        try {
-//            return SlimeSerializer
-//            return ((SlimeLoadedWorld) slimeWorld).serialize().get();
-//        } catch (IndexOutOfBoundsException e) {
-//            throw new IllegalStateException(slimeWorld.getName() + " is too big!", e);
-//        } catch (IOException | InterruptedException | ExecutionException e) {
-//            throw new IllegalStateException("Couldn't serialize world " + slimeWorld.getName(), e);
-//        }
-//    }
 
     @Override
     public WorldManagerType getType() {
@@ -239,17 +156,17 @@ public class ASPWorldManagerImpl implements ASPWorldManager {
 
     @Override
     public void copyWorld(File source, File target) {
-
+        // Not applicable for slime worlds
     }
 
     @Override
     public void deleteWorld(String name, boolean removeFile) {
         unloadWorld(name, false);
-        if (removeFile) {
+        if (removeFile && loader != null) {
             try {
                 loader.deleteWorld(name);
             } catch (Exception e) {
-                Bukkit.getLogger().log(Level.SEVERE, "Something went wrong whilst deleting a world for the arena " + name);
+                Bukkit.getLogger().log(Level.SEVERE, "Failed to delete slime world: " + name);
                 e.printStackTrace();
             }
         }
@@ -257,20 +174,17 @@ public class ASPWorldManagerImpl implements ASPWorldManager {
 
     @Override
     public void deleteWorld(File file) {
-
+        // No-op: slime worlds are not file-based in this context
     }
 
-    // UTILS
-
-    public void setWorldSettings(World world) {
+    private void applyWorldSettings(World world) {
+        world.setDifficulty(org.bukkit.Difficulty.NORMAL);
         world.setSpawnFlags(true, true);
         world.setPVP(true);
         world.setStorm(false);
         world.setThundering(false);
         world.setWeatherDuration(Integer.MAX_VALUE);
         world.setKeepSpawnInMemory(false);
-        world.setTicksPerAnimalSpawns(1);
-        world.setTicksPerMonsterSpawns(1);
         world.setAutoSave(false);
 
         SkyWarsReloaded.getNMS().setGameRule(world, "doMobSpawning", "false");

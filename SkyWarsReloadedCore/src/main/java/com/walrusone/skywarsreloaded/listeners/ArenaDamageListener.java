@@ -43,8 +43,7 @@ public class ArenaDamageListener implements org.bukkit.event.Listener {
             Player target = (Player) event.getEntity();
             GameMap gameMap = MatchManager.get().getPlayerMap(target);
             if ((gameMap != null) && (!gameMap.getSpectators().contains(target.getUniqueId()))) {
-                if ((gameMap.getMatchState() == MatchState.ENDING || gameMap.getMatchState() == MatchState.WAITINGSTART || gameMap.getMatchState() == MatchState.WAITINGLOBBY) ||
-                        gameMap.isDisableDamage()) {
+                if (gameMap.getMatchState() == MatchState.ENDING || gameMap.getMatchState() == MatchState.WAITINGSTART || gameMap.getMatchState() == MatchState.WAITINGLOBBY) {
                     event.setCancelled(true);
                 // Friendly fire attack
                 } else if (!gameMap.allowFriendlyFire() && damager instanceof Player && gameMap.getMatchState() == MatchState.PLAYING && gameMap.getTeamCard(target).equals(gameMap.getTeamCard((Player)damager))) {
@@ -116,8 +115,6 @@ public class ArenaDamageListener implements org.bukkit.event.Listener {
                 if (gameMap.getMatchState() == MatchState.ENDING || gameMap.getMatchState() == MatchState.WAITINGSTART || gameMap.getMatchState() == MatchState.WAITINGLOBBY) {
                     event.setCancelled(true);
                 } else if (!gameMap.getAllowFallDamage() && event.getCause() == EntityDamageEvent.DamageCause.FALL) {
-                    event.setCancelled(true);
-                } else if (gameMap.isDisableDamage() && event.getCause() != EntityDamageEvent.DamageCause.VOID) {
                     event.setCancelled(true);
                 } else {
                     event.setCancelled(false);
